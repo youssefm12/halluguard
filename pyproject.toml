@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "halluguard-ai"
+version = "1.0.0"
+description = "Detect, explain, and correct hallucinations in AI-generated code."
+authors = [{name = "HalluGuard contributors"}]
+license = {file = "LICENSE"}
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "tree-sitter>=0.21.0",
+    "tree-sitter-python>=0.21.0",
+    "requests>=2.31.0",
+    "click>=8.1.7",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "mypy>=1.9.0",
+    "ruff>=0.3.4",
+    "black>=24.3.0",
+    "pre-commit>=3.6.0"
+]
+
+[project.scripts]
+halluguard = "cli.halluguard:main"
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true
