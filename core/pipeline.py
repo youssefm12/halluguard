@@ -1,32 +1,99 @@
 """
-Pipeline module for HalluGuard AI.
-Coordinates parser, verifier, scorer, and corrector.
-"""
-from core.parser import python_parser
-from core.verifier import pypi_verifier
-from core.scorer import hallucination_scorer
+HalluGuard AI — End-to-End Analysis Pipeline.
 
-def analyze(code: str, language: str = "python") -> dict:
+This is the single entry point for the entire core engine.
+It orchestrates:
+
+1. AST parsing  (Python or JS/TS)
+2. Knowledge verification  (PyPI or npm)
+3. RWKV hybrid scoring  (local model + optional cloud)
+4. Hallucination scoring  (weighted blend)
+5. Correction suggestions
+
+Usage::
+
+    from core.pipeline import analyze
+    report = analyze(code, language="python")
+    print(report.to_dict())
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from core.parser import python_parser
+from core.parser import js_parser
+from core.verifier import pypi_verifier
+from core.verifier import npm_verifier
+from core.scorer.hallucination_scorer import HallucinationReport, compute
+from core.corrector import suggestion_engine
+from core.rwkv_engine import router as rwkv_router
+
+
+# ── Supported languages ───────────────────────────────────────────
+_PYTHON_ALIASES = frozenset({"python", "py"})
+_JS_ALIASES = frozenset({"javascript", "js"})
+_TS_ALIASES = frozenset({"typescript", "ts"})
+
+
+def analyze(
+    code: str,
+    language: str = "python",
+    file_name: str | None = None,
+    weights: dict[str, float] | None = None,
+) -> HallucinationReport:
     """
-    Analyzes a given code snippet for hallucinations.
-    
+    Run the full hallucination detection pipeline on *code*.
+
     Args:
-        code: The source code to analyze.
-        language: The programming language (currently only python).
-        
+        code:      Source code string to analyse.
+        language:  ``"python"``, ``"javascript"`` or ``"typescript"``.
+        file_name: Optional file name attached to the report.
+        weights:   Optional weight overrides for the scorer
+                   (keys: ``knowledge``, ``ast``, ``rwkv``).
+
     Returns:
-        dict: The complete hallucination report.
+        A fully populated ``HallucinationReport``.
     """
-    # 1. Parse the AST
-    tokens = python_parser.extract(code, language)
-    
-    # 2. Verify knowledge
-    knowledge = pypi_verifier.check(tokens)
-    
-    # 3. Compute Risk Score
-    report = hallucination_scorer.compute(tokens, knowledge)
-    
-    # Append the file name for completeness
-    report["file"] = "snippet." + ("py" if language == "python" else "txt")
-    
+    lang = language.lower()
+
+    # ── 1. Parse ───────────────────────────────────────────────
+    if lang in _PYTHON_ALIASES:
+        tokens = python_parser.extract(code, "python")
+    elif lang in _JS_ALIASES:
+        tokens = js_parser.extract(code, "javascript")
+    elif lang in _TS_ALIASES:
+        tokens = js_parser.extract(code, "typescript")
+    else:
+        raise ValueError(
+            f"Unsupported language '{language}'. "
+            "Choose from: python, javascript, typescript."
+        )
+
+    # ── 2. Verify knowledge ────────────────────────────────────
+    if lang in _PYTHON_ALIASES:
+        knowledge = pypi_verifier.check(tokens)
+    else:
+        knowledge = npm_verifier.check(tokens)
+
+    # ── 3. RWKV hybrid scoring ─────────────────────────────────
+    routing = rwkv_router.score(code)
+    rwkv_score: float | None = None
+    if routing.final_score > 0 or routing.route != "heuristic_only":
+        rwkv_score = routing.final_score
+
+    # ── 4. Compute risk score ──────────────────────────────────
+    report = compute(tokens, knowledge, rwkv_score=rwkv_score, weights=weights)
+
+    # ── 5. Generate corrections ────────────────────────────────
+    suggestions = suggestion_engine.suggest(report, language=lang)
+    report.suggestions = suggestions
+
+    # ── 6. Attach file metadata ────────────────────────────────
+    if file_name:
+        report.file = file_name
+    else:
+        ext_map = {"python": "py", "py": "py", "javascript": "js",
+                   "js": "js", "typescript": "ts", "ts": "ts"}
+        report.file = f"snippet.{ext_map.get(lang, 'txt')}"
+
     return report

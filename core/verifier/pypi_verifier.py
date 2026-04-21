@@ -1,91 +1,116 @@
 """
-Knowledge Verifier module.
-Checks imported packages against PyPI.
-"""
-import requests
-import builtins
-import sys
-from typing import Dict, Any
+PyPI Knowledge Verifier.
 
-# Simple in-memory cache to prevent redundant HTTP requests 
-# (simulating the 24h TTL cache required in MVP)
-_PYPI_CACHE: Dict[str, bool] = {}
+For each Python import, verifies existence against the PyPI JSON API.
+Implements:
+- Stdlib detection (never queries PyPI for ``os``, ``sys``, etc.)
+- TTL-based in-memory cache (default 24 h)
+- Version validation when available
+"""
+from __future__ import annotations
+
+import sys
+import time
+import requests
+from dataclasses import dataclass, field
+from typing import Any
+
+# ── Default TTL for cache entries (seconds) ────────────────────────
+_DEFAULT_TTL: int = 86_400  # 24 hours
+
+
+@dataclass
+class _CacheEntry:
+    """Single cache record for a PyPI lookup."""
+    exists: bool
+    latest_version: str | None = None
+    timestamp: float = field(default_factory=time.time)
+
+    def is_expired(self, ttl: int = _DEFAULT_TTL) -> bool:
+        return (time.time() - self.timestamp) > ttl
+
+
+# ── Module-level cache ─────────────────────────────────────────────
+_cache: dict[str, _CacheEntry] = {}
+
+
+# ── Stdlib detection ───────────────────────────────────────────────
+def _stdlib_modules() -> frozenset[str]:
+    """Return a frozen set of all known stdlib module names."""
+    if hasattr(sys, "stdlib_module_names"):
+        return frozenset(sys.stdlib_module_names)
+    # Fallback for Python < 3.10
+    return frozenset(sys.builtin_module_names)
+
+_STDLIB: frozenset[str] = _stdlib_modules()
+
 
 def is_standard_library(package_name: str) -> bool:
-    """Check if a module is part of the Python standard library."""
-    if package_name in sys.builtin_module_names:
-        return True
-    
-    # Simple heuristic for stdlib using sys.stdlib_module_names (Python 3.10+)
-    if hasattr(sys, 'stdlib_module_names'):
-        return package_name in sys.stdlib_module_names
-        
-    return False
+    """Return ``True`` if *package_name* is a Python standard library module."""
+    return package_name in _STDLIB
 
-def check_package(package_name: str) -> dict:
+
+# ── Single-package lookup ──────────────────────────────────────────
+def check_package(package_name: str) -> dict[str, Any]:
     """
-    Verifies if a specific Python package exists on PyPI.
-    
+    Verify whether a Python package exists on PyPI.
+
     Args:
-        package_name: The name of the package to verify.
-        
+        package_name: Top-level module / package name.
+
     Returns:
-        dict: A structured result indicating if the package exists.
+        A dict with keys ``package``, ``exists``, ``type``,
+        and optionally ``latest_version`` or ``error``.
     """
-    result = {
-        "package": package_name,
-        "exists": False
-    }
-    
-    # 1. Skip check for standard library modules
+    result: dict[str, Any] = {"package": package_name, "exists": False}
+
+    # 1. Standard library — always valid
     if is_standard_library(package_name):
-        result["exists"] = True
-        result["type"] = "stdlib"
+        result.update(exists=True, type="stdlib")
         return result
-        
-    # 2. Check local cache
-    if package_name in _PYPI_CACHE:
-        result["exists"] = _PYPI_CACHE[package_name]
-        result["type"] = "pypi_cached"
+
+    # 2. TTL cache hit
+    cached = _cache.get(package_name)
+    if cached is not None and not cached.is_expired():
+        result.update(
+            exists=cached.exists,
+            type="pypi_cached",
+            latest_version=cached.latest_version,
+        )
         return result
-        
-    # 3. Request PyPI JSON API
+
+    # 3. Live PyPI API call
     url = f"https://pypi.org/pypi/{package_name}/json"
     try:
-        response = requests.get(url, timeout=5)
-        exists = response.status_code == 200
-        
-        # Update cache
-        _PYPI_CACHE[package_name] = exists
-        
-        result["exists"] = exists
-        result["type"] = "pypi_api"
-    except requests.RequestException:
-        # If API fails (e.g. network error), we might fail open or fail closed. 
-        # For hallucination detection, lacking proof means it might be an issue.
-        result["exists"] = False
-        result["type"] = "error"
-        result["error"] = "Network request failed"
-        
+        resp = requests.get(url, timeout=5)
+        exists = resp.status_code == 200
+        latest_version: str | None = None
+        if exists:
+            data = resp.json()
+            latest_version = data.get("info", {}).get("version")
+
+        _cache[package_name] = _CacheEntry(
+            exists=exists, latest_version=latest_version
+        )
+        result.update(exists=exists, type="pypi_api", latest_version=latest_version)
+    except requests.RequestException as exc:
+        result.update(exists=False, type="error", error=str(exc))
+
     return result
 
-def check(tokens: dict) -> Dict[str, Any]:
+
+# ── Batch check (called by the pipeline) ───────────────────────────
+def check(tokens: dict[str, Any]) -> dict[str, Any]:
     """
-    Checks all found imports against external knowledge sources.
-    
+    Verify all imports found in *tokens* against PyPI.
+
     Args:
-        tokens: Output from the parser `extract()` method.
-        
+        tokens: Output of ``python_parser.extract()``.
+
     Returns:
-        dict: The mapped verification results for each import.
+        ``{"verified_imports": {name: check_result, ...}}``
     """
-    imports = tokens.get("imports", [])
-    verified_modules = {}
-    
-    for imp in imports:
-        verification = check_package(imp)
-        verified_modules[imp] = verification
-        
-    return {
-        "verified_imports": verified_modules
-    }
+    verified: dict[str, dict[str, Any]] = {}
+    for imp in tokens.get("imports", []):
+        verified[imp] = check_package(imp)
+    return {"verified_imports": verified}
