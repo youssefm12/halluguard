@@ -1,0 +1,24 @@
+name: "HalluGuard AI - Hallucination Detector"
+description: "Detect, explain, and correct hallucinations in Python and JavaScript/TypeScript code."
+author: "HalluGuard"
+branding:
+  icon: "shield"
+  color: "blue"
+
+inputs:
+  github-token:
+    description: "GitHub token to post PR review comments."
+    required: true
+    default: ${{ github.token }}
+  severity-threshold:
+    description: "Fail the build if hallucinations of this severity or higher are found (LOW, MEDIUM, HIGH, CRITICAL)."
+    required: true
+    default: "MEDIUM"
+  fail-on-hallucination:
+    description: "If true, the action fails if hallucinations meeting the threshold are found."
+    required: true
+    default: "true"
+
+runs:
+  using: "node20"
+  main: "dist/index.js"
