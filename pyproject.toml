@@ -7,7 +7,7 @@ name = "halluguard-ai"
 version = "1.0.0"
 description = "Detect, explain, and correct hallucinations in AI-generated code."
 authors = [{name = "HalluGuard contributors"}]
-license = {file = "LICENSE"}
+license = {text = "Apache-2.0"}
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -29,7 +29,11 @@ dev = [
 ]
 
 [project.scripts]
-halluguard = "cli.halluguard:main"
+halluguard = "cli.haluguard:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["api*", "cli*", "core*"]
 
 [tool.ruff]
 line-length = 88
